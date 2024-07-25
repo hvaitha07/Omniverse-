@@ -1,0 +1,55 @@
+import asyncio
+import numpy as np
+from omni.isaac.core.world import World
+from omni.isaac.core.articulations import ArticulationView
+from omni.isaac.core.utils.nucleus import get_assets_root_path
+from omni.isaac.core.utils.stage import add_reference_to_stage
+from omni.isaac.dynamic_control import _dynamic_control
+
+# Function to initialize the simulation and add the robot
+async def add_franka_and_initialize():
+    # Initialize the world and simulation context
+    world = World()
+    await world.initialize_simulation_context_async()
+    world.scene.add_default_ground_plane()
+
+    # Load the Franka robot model
+    asset_path = get_assets_root_path() + "/Isaac/Robots/Franka/franka.usd"
+    add_reference_to_stage(usd_path=asset_path, prim_path="/World/Franka")
+
+    # Reset simulation to apply initial settings
+    await world.reset_async()
+    return world
+
+# Function to perform controlled joint manipulations with pauses
+async def perform_controlled_movements(world):
+    dc = _dynamic_control.acquire_dynamic_control_interface()
+    articulation = dc.get_articulation("/World/Franka")
+
+    # Wake up the robot articulation to ensure responsiveness
+    dc.wake_up_articulation(articulation)
+
+    # Cycle through predefined positions
+    positions = [
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],  # Neutral position
+        [np.pi/4]*9,  # All joints to 45 degrees
+        [-np.pi/4]*9, # All joints to -45 degrees
+        [np.pi/2]*9,  # All joints to 90 degrees
+        [-np.pi/2]*9, # All joints to -90 degrees
+    ]
+
+    # Execute each position with a pause
+    for pos in positions:
+        dc.set_articulation_dof_position_targets(articulation, pos)
+        await asyncio.sleep(3)  # Pause for three seconds at each position
+
+# Main asynchronous function to coordinate setup and control
+async def main():
+    world = await add_franka_and_initialize()
+    await perform_controlled_movements(world)
+
+# Run the script
+asyncio.ensure_future(main())
+
+
+
