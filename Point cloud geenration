@@ -1,0 +1,73 @@
+import omni
+import asyncio
+from omni.isaac.range_sensor import _range_sensor
+from pxr import UsdGeom, Gf, UsdPhysics, Semantics, Usd
+
+# Initialize stage and interfaces
+stage = omni.usd.get_context().get_stage()
+timeline = omni.timeline.get_timeline_interface()
+lidarInterface = _range_sensor.acquire_lidar_sensor_interface()
+
+# Add Physics Scene
+omni.kit.commands.execute('AddPhysicsSceneCommand', stage=stage, path='/World/PhysicsScene')
+
+# Create LiDAR
+lidarPath = "/LidarName"
+result, prim = omni.kit.commands.execute(
+    "RangeSensorCreateLidar",
+    path=lidarPath,
+    parent="/World",
+    min_range=0.4,
+    max_range=100.0,
+    draw_points=True,
+    draw_lines=False,
+    horizontal_fov=360.0,
+    vertical_fov=60.0,
+    horizontal_resolution=0.4,
+    vertical_resolution=0.4,
+    rotation_rate=0.0,
+    high_lod=True,
+    yaw_offset=0.0,
+    enable_semantics=True
+)
+UsdGeom.XformCommonAPI(prim).SetTranslate((2.0, 0.0, 0.0))
+
+# Create a cube and a sphere
+primType = ["Cube", "Sphere"]
+for i in range(2):
+    prim = stage.DefinePrim("/World/" + primType[i], primType[i])
+    UsdGeom.XformCommonAPI(prim).SetTranslate((-2.0, -2.0 + i * 4.0, 0.0))
+    UsdGeom.XformCommonAPI(prim).SetScale((1, 1, 1))
+    collisionAPI = UsdPhysics.CollisionAPI.Apply(prim)
+
+    # Add semantic label
+    sem = Semantics.SemanticsAPI.Apply(prim, "Semantics")
+    sem.CreateSemanticTypeAttr()
+    sem.CreateSemanticDataAttr()
+    sem.GetSemanticTypeAttr().Set("class")
+    sem.GetSemanticDataAttr().Set(primType[i])
+
+# Function to get LiDAR data and save to USD
+async def get_lidar_data():
+    await asyncio.sleep(1.0)
+    timeline.pause()
+    pointcloud = lidarInterface.get_point_cloud_data("/World" + lidarPath)
+    semantics = lidarInterface.get_semantic_data("/World" + lidarPath)
+    
+    print("Point Cloud Length:", len(pointcloud))
+    print("Point Cloud:", pointcloud)
+    print("Semantic ID Length:", len(semantics))
+    
+    # Save point cloud data to USD
+    pointcloud_path = "omniverse://localhost/hand/omni_point1.usd"
+    stage = Usd.Stage.CreateNew(pointcloud_path)
+    prim = stage.DefinePrim("/PointCloud", "PointInstancer")
+    points = UsdGeom.Points.Define(stage, "/PointCloud")
+    points.CreatePointsAttr(pointcloud)
+    stage.GetRootLayer().Save()
+
+    print(f"Point cloud data saved to {pointcloud_path}")
+
+# Start the simulation and get LiDAR data
+timeline.play()
+asyncio.ensure_future(get_lidar_data())
