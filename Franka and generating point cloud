@@ -1,0 +1,88 @@
+import asyncio
+import omni
+import os
+from pxr import UsdGeom, Gf, UsdPhysics, Usd, Sdf
+from omni.isaac.core.utils.nucleus import get_assets_root_path
+from omni.isaac.core.utils.stage import add_reference_to_stage
+from omni.isaac.core.world import World
+from omni.isaac.range_sensor import _range_sensor
+
+async def setup_environment_and_lidar():
+    world = World()
+    await world.initialize_simulation_context_async()
+
+    # Load the Franka robot model and add it to the stage
+    asset_path = get_assets_root_path() + "/Isaac/Robots/Franka/franka.usd"
+    robot_prim_path = "/World/Franka"
+    add_reference_to_stage(usd_path=asset_path, prim_path=robot_prim_path)
+
+    # Ensure the robot is properly initialized
+    await world.reset_async()
+
+    # Attach LIDAR to PandaLink7
+    lidar_path = robot_prim_path + "/PandaLink7/Lidar"
+    result, lidar_prim = omni.kit.commands.execute(
+        "RangeSensorCreateLidar",
+        path=lidar_path,
+        parent=robot_prim_path + "/PandaLink7",
+        min_range=0.1,
+        max_range=100.0,
+        draw_points=True,
+        horizontal_fov=360.0,
+        vertical_fov=60.0,
+        horizontal_resolution=0.1,
+        vertical_resolution=0.1,
+        high_lod=True
+    )
+    UsdGeom.XformCommonAPI(lidar_prim).SetTranslate((0.0, 0.0, 0.1))
+
+    # Small cube to simulate a fastener
+    prim = world.stage.DefinePrim("/World/SmallFastener", "Cube")
+    UsdGeom.XformCommonAPI(prim).SetTranslate((0.2, 0.0, 0.02))  # Adjust position to be on the ground
+    UsdGeom.XformCommonAPI(prim).SetScale((0.02, 0.02, 0.02))  # Smaller size
+    UsdPhysics.CollisionAPI.Apply(prim)
+
+    return world, lidar_path
+
+def save_point_cloud_to_usd(filename, points):
+    stage = Usd.Stage.CreateNew(filename)
+    root_prim = stage.DefinePrim("/PointCloud", "Xform")
+    point_prim = UsdGeom.Points.Define(stage, "/PointCloud/points")
+
+    positions = [Gf.Vec3f(*point) for point in points]
+    point_prim.GetPointsAttr().Set(positions)
+    point_prim.GetPrim().GetAttribute("widths").Set([0.01] * len(points))
+
+    stage.GetRootLayer().Save()
+
+async def capture_lidar_data(lidar_path):
+    await asyncio.sleep(1)  # Wait for the simulation to stabilize
+    lidar_interface = _range_sensor.acquire_lidar_sensor_interface()
+    point_cloud = lidar_interface.get_point_cloud_data(lidar_path)
+    semantics = lidar_interface.get_semantic_data(lidar_path)
+    print("Point Cloud:", len(point_cloud))
+    print("Semantic ID:", len(semantics))
+
+    # Filter out points that are too close to the LiDAR sensor (likely part of the robot)
+    min_distance = 0.2  # Set an appropriate distance threshold
+    filtered_points = [point for point in point_cloud if (point[0]**2 + point[1]**2 + point[2]**2)**0.5 > min_distance]
+
+    # Additional filtering to remove points around PandaLink8
+    panda_link8_position = Gf.Vec3f(0.0, 0.0, 0.5)  # Adjust based on the actual position
+    exclusion_radius = 0.1  # Adjust the radius as needed
+    filtered_points = [
+        point for point in filtered_points
+        if (Gf.Vec3f(*point) - panda_link8_position).GetLength() > exclusion_radius
+    ]
+
+    # Save point cloud data to a USD file
+    save_path = "omniverse://localhost/robotic_hand/omni_point_cloud.usd"
+    save_point_cloud_to_usd(save_path, filtered_points)
+    print(f"Point cloud data saved to {save_path}")
+
+async def main():
+    world, lidar_path = await setup_environment_and_lidar()
+    await capture_lidar_data(lidar_path)
+    world.play()  # Start simulation
+
+asyncio.ensure_future(main())
